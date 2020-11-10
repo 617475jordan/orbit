@@ -45,7 +45,7 @@ class TimerQueryPool {
     kQueryPendingOnGPU,
   };
 
-  static constexpr uint32_t kNumLogicalQuerySlots = 16384;
+  static constexpr uint32_t kNumLogicalQuerySlots = 32768;
   static constexpr uint32_t kNumPhysicalTimerQuerySlots = kNumLogicalQuerySlots * 2;
 
   void CalibrateGPUTimeStamps(const VkDevice& device, const VkPhysicalDevice& physical_device,
