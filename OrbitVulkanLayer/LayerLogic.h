@@ -178,6 +178,20 @@ class LayerLogic {
     dispatch_table_.CmdEndDebugUtilsLabelEXT(command_buffer)(command_buffer);
   }
 
+  void CallCmdDebugMarkerBeginEXT(VkCommandBuffer command_buffer,
+                                  const VkDebugMarkerMarkerInfoEXT* marker_info) {
+    LOG("CallCmdDebugMarkerBeginEXT");
+    dispatch_table_.CmdDebugMarkerBeginEXT(command_buffer)(command_buffer, marker_info);
+  }
+  void PostCallCmdDebugMarkerBeginEXT(VkCommandBuffer command_buffer,
+                                      const VkDebugMarkerMarkerInfoEXT* marker_info);
+
+  void PreCallCmdDebugMarkerEndEXT(VkCommandBuffer command_buffer);
+  void CallCmdDebugMarkerEndEXT(VkCommandBuffer command_buffer) {
+    LOG("CallCmdDebugMarkerEndEXT");
+    dispatch_table_.CmdDebugMarkerEndEXT(command_buffer)(command_buffer);
+  }
+
  private:
   DispatchTable dispatch_table_;
   PhysicalDeviceManager physical_device_manager_;

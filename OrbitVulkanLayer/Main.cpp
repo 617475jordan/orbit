@@ -174,6 +174,17 @@ VKAPI_ATTR void VKAPI_CALL OrbitCmdEndDebugUtilsLabelEXT(VkCommandBuffer command
   logic_.CallCmdEndDebugUtilsLabelEXT(command_buffer);
 }
 
+VKAPI_ATTR void VKAPI_CALL OrbitCmdDebugMarkerBeginEXT(
+    VkCommandBuffer command_buffer, const VkDebugMarkerMarkerInfoEXT* marker_info) {
+  logic_.CallCmdDebugMarkerBeginEXT(command_buffer, marker_info);
+  logic_.PostCallCmdDebugMarkerBeginEXT(command_buffer, marker_info);
+}
+
+VKAPI_ATTR void VKAPI_CALL OrbitCmdDebugMarkerEndEXT(VkCommandBuffer command_buffer) {
+  logic_.PreCallCmdDebugMarkerEndEXT(command_buffer);
+  logic_.CallCmdDebugMarkerEndEXT(command_buffer);
+}
+
 // ----------------------------------------------------------------------------
 // Layer enumeration functions
 // ----------------------------------------------------------------------------
@@ -272,7 +283,8 @@ ORBIT_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL OrbitGetDeviceProcAddr(VkD
 
   ORBIT_GETPROCADDR(CmdBeginDebugUtilsLabelEXT)
   ORBIT_GETPROCADDR(CmdEndDebugUtilsLabelEXT)
-
+  ORBIT_GETPROCADDR(CmdDebugMarkerBeginEXT)
+  ORBIT_GETPROCADDR(CmdDebugMarkerEndEXT)
   LOG("Fallback");
   return logic_.CallGetDeviceProcAddr(device, name);
 }

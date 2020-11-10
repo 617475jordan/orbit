@@ -176,4 +176,13 @@ void LayerLogic::PreCallCmdEndDebugUtilsLabelEXT(VkCommandBuffer /*command_buffe
   LOG("PreCallCmdEndDebugUtilsLabelEXT");
 }
 
+void LayerLogic::PostCallCmdDebugMarkerBeginEXT(VkCommandBuffer /*command_buffer*/,
+                                                const VkDebugMarkerMarkerInfoEXT* /*marker_info*/) {
+  LOG("PostCallCmdDebugMarkerBeginEXT");
+}
+
+void LayerLogic::PreCallCmdDebugMarkerEndEXT(VkCommandBuffer /*command_buffer*/) {
+  LOG("PreCallCmdDebugMarkerEndEXT");
+}
+
 }  // namespace orbit_vulkan_layer

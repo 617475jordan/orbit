@@ -137,6 +137,11 @@ class DispatchTable {
     dispatch_table.CmdEndDebugUtilsLabelEXT = absl::bit_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(
         next_get_device_proc_add_function(device, "vkCmdEndDebugUtilsLabelEXT"));
 
+    dispatch_table.CmdDebugMarkerBeginEXT = absl::bit_cast<PFN_vkCmdDebugMarkerBeginEXT>(
+        next_get_device_proc_add_function(device, "vkCmdDebugMarkerBeginEXT"));
+    dispatch_table.CmdDebugMarkerEndEXT = absl::bit_cast<PFN_vkCmdDebugMarkerEndEXT>(
+        next_get_device_proc_add_function(device, "vkCmdDebugMarkerEndEXT"));
+
     {
       absl::WriterMutexLock lock(&mutex_);
       device_dispatch_table_[GetDispatchTableKey(device)] = dispatch_table;
@@ -439,6 +444,22 @@ class DispatchTable {
     void* key = GetDispatchTableKey(dispatchable_object);
     CHECK(device_dispatch_table_.contains(key));
     return device_dispatch_table_.at(key).CmdEndDebugUtilsLabelEXT;
+  }
+
+  template <typename DispatchableType>
+  PFN_vkCmdDebugMarkerBeginEXT CmdDebugMarkerBeginEXT(const DispatchableType& dispatchable_object) {
+    absl::ReaderMutexLock lock(&mutex_);
+    void* key = GetDispatchTableKey(dispatchable_object);
+    CHECK(device_dispatch_table_.contains(key));
+    return device_dispatch_table_.at(key).CmdDebugMarkerBeginEXT;
+  }
+
+  template <typename DispatchableType>
+  PFN_vkCmdDebugMarkerEndEXT CmdDebugMarkerEndEXT(const DispatchableType& dispatchable_object) {
+    absl::ReaderMutexLock lock(&mutex_);
+    void* key = GetDispatchTableKey(dispatchable_object);
+    CHECK(device_dispatch_table_.contains(key));
+    return device_dispatch_table_.at(key).CmdDebugMarkerEndEXT;
   }
 
  private:
