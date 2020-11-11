@@ -55,6 +55,8 @@ class GpuTrack : public TimerTrack {
       const orbit_client_protos::TimerInfo& timer_info) const;
   [[nodiscard]] std::string GetHwExecutionTooltip(
       const orbit_client_protos::TimerInfo& timer_info) const;
+  [[nodiscard]] std::string GetCommandBufferTooltip(
+      const orbit_client_protos::TimerInfo& timer_info) const;
 };
 
 #endif  // ORBIT_GL_GPU_TRACK_H_

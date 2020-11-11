@@ -111,7 +111,7 @@ float GpuTrack::GetYFromDepth(uint32_t depth) const {
 bool GpuTrack::TimerFilter(const TimerInfo& timer_info) const {
   if (collapse_toggle_->IsCollapsed()) {
     std::string gpu_stage = string_manager_->Get(timer_info.user_data_key()).value_or("");
-    if (gpu_stage != kHwExecutionString && gpu_stage != kCmdBufferString) {
+    if (gpu_stage != kHwExecutionString) {
       return false;
     }
   }
@@ -190,10 +190,15 @@ std::string GpuTrack::GetBoxTooltip(PickingId id) const {
       string_manager_->Get(text_box->GetTimerInfo().user_data_key()).value_or("");
   if (gpu_stage == kSwQueueString) {
     return GetSwQueueTooltip(text_box->GetTimerInfo());
-  } else if (gpu_stage == kHwQueueString) {
+  }
+  if (gpu_stage == kHwQueueString) {
     return GetHwQueueTooltip(text_box->GetTimerInfo());
-  } else if (gpu_stage == kHwExecutionString) {
+  }
+  if (gpu_stage == kHwExecutionString) {
     return GetHwExecutionTooltip(text_box->GetTimerInfo());
+  }
+  if (gpu_stage == kCmdBufferString) {
+    return GetCommandBufferTooltip(text_box->GetTimerInfo());
   }
 
   return "";
@@ -229,6 +234,21 @@ std::string GpuTrack::GetHwExecutionTooltip(const TimerInfo& timer_info) const {
       "<b>Harware Execution</b><br/>"
       "<i>End is marked by \"dma_fence_signaled\" event for this command "
       "buffer submission</i>"
+      "<br/>"
+      "<br/>"
+      "<b>Submitted from thread:</b> %s [%d]<br/>"
+      "<b>Time:</b> %s",
+      GOrbitApp->GetCaptureData().GetThreadName(timer_info.thread_id()), timer_info.thread_id(),
+      GetPrettyTime(TicksToDuration(timer_info.start(), timer_info.end())).c_str());
+}
+
+std::string GpuTrack::GetCommandBufferTooltip(
+    const orbit_client_protos::TimerInfo& timer_info) const {
+  return absl::StrFormat(
+      "<b>Command Buffer Execution</b><br/>"
+      "<i>At `vkBeginCommandBuffer` and `vkEndCommandBuffer`, `vkCmdWriteTimestamp`s have been "
+      "inserted. The gpu timestamps get alligned with the corresponding submit's hardware "
+      "execution </i>"
       "<br/>"
       "<br/>"
       "<b>Submitted from thread:</b> %s [%d]<br/>"
