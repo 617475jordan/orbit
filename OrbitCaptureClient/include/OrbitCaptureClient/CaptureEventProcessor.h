@@ -40,6 +40,14 @@ class CaptureEventProcessor {
   void ProcessTracepointEvent(const orbit_grpc_protos::TracepointEvent& tracepoint_event);
   void ProcessGpuQueueSubmission(const orbit_grpc_protos::GpuQueueSubmisssion& gpu_command_buffer);
 
+  void DoProcessGpuQueueSubmission(
+      const orbit_grpc_protos::GpuQueueSubmisssion& gpu_queue_submission,
+      const orbit_grpc_protos::GpuJob& matching_gpu_job);
+  const orbit_grpc_protos::GpuJob* FindMatchingGpuJob(
+      const orbit_grpc_protos::GpuQueueSubmisssion& gpu_queue_submission);
+  const orbit_grpc_protos::GpuQueueSubmisssion* FindMatchingGpuQueueSubmission(
+      const orbit_grpc_protos::GpuJob& gpu_job);
+
   absl::flat_hash_map<uint64_t, orbit_grpc_protos::Callstack> callstack_intern_pool;
   absl::flat_hash_map<uint64_t, std::string> string_intern_pool;
   absl::flat_hash_map<uint64_t, orbit_grpc_protos::TracepointInfo> tracepoint_intern_pool_;
@@ -56,6 +64,8 @@ class CaptureEventProcessor {
 
   std::map<int32_t, std::map<uint64_t, orbit_grpc_protos::GpuJob>>
       tid_to_submission_time_to_gpu_job_;
+  std::map<int32_t, std::map<uint64_t, orbit_grpc_protos::GpuQueueSubmisssion>>
+      tid_to_post_submission_time_to_gpu_submission_;
 };
 
 #endif  // ORBIT_GL_CAPTURE_EVENT_PROCESSOR_H_

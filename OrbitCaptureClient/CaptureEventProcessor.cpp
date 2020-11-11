@@ -205,48 +205,92 @@ void CaptureEventProcessor::ProcessGpuJob(const GpuJob& gpu_job) {
   timer_start_to_finish.set_type(TimerInfo::kGpuActivity);
   capture_listener_->OnTimer(std::move(timer_start_to_finish));
 
-  // TODO: We should also buffer the vulkan events, as in theory they could also be first, and match
-  // then here.
-  tid_to_submission_time_to_gpu_job_[gpu_job.tid()][gpu_job.amdgpu_cs_ioctl_time_ns()] = gpu_job;
-}
-
-// TODO: this assumes that the events come in order and all GpuJobs have been seen.
-void CaptureEventProcessor::ProcessGpuQueueSubmission(
-    const GpuQueueSubmisssion& gpu_queue_submission) {
-  constexpr const char* command_buffer_text = "command buffer";
-  uint64_t command_buffer_text_key = GetStringHashAndSendToListenerIfNecessary(command_buffer_text);
-
-  const auto& submission_time_to_gpu_job_it =
-      tid_to_submission_time_to_gpu_job_.find(gpu_queue_submission.thread_id());
-  if (submission_time_to_gpu_job_it == tid_to_submission_time_to_gpu_job_.end()) {
-    ERROR("Skipping Gpu Event - TID not found");
+  const GpuQueueSubmisssion* matching_gpu_submission = FindMatchingGpuQueueSubmission(gpu_job);
+  if (matching_gpu_submission == nullptr) {
+    tid_to_submission_time_to_gpu_job_[gpu_job.tid()][gpu_job.amdgpu_cs_ioctl_time_ns()] = gpu_job;
     return;
   }
 
-  auto& submission_time_to_gpu_job = submission_time_to_gpu_job_it->second;
+  DoProcessGpuQueueSubmission(*matching_gpu_submission, gpu_job);
+  tid_to_post_submission_time_to_gpu_submission_.at(gpu_job.tid())
+      .erase(matching_gpu_submission->post_submission_cpu_timestamp());
+}
+
+void CaptureEventProcessor::ProcessGpuQueueSubmission(
+    const GpuQueueSubmisssion& gpu_queue_submission) {
+  const GpuJob* matching_gpu_job = FindMatchingGpuJob(gpu_queue_submission);
+  if (matching_gpu_job == nullptr) {
+    tid_to_post_submission_time_to_gpu_submission_
+        [gpu_queue_submission.thread_id()][gpu_queue_submission.post_submission_cpu_timestamp()] =
+            gpu_queue_submission;
+    return;
+  }
+  DoProcessGpuQueueSubmission(gpu_queue_submission, *matching_gpu_job);
+  tid_to_submission_time_to_gpu_job_.at(gpu_queue_submission.thread_id())
+      .erase(matching_gpu_job->amdgpu_cs_ioctl_time_ns());
+}
+
+const GpuQueueSubmisssion* CaptureEventProcessor::FindMatchingGpuQueueSubmission(
+    const orbit_grpc_protos::GpuJob& gpu_job) {
+  const auto& post_submission_time_to_gpu_submission_it =
+      tid_to_post_submission_time_to_gpu_submission_.find(gpu_job.tid());
+  if (post_submission_time_to_gpu_submission_it ==
+      tid_to_post_submission_time_to_gpu_submission_.end()) {
+    return nullptr;
+  }
+
+  const auto& post_submission_time_to_gpu_submission =
+      post_submission_time_to_gpu_submission_it->second;
+
+  auto upper_bound_gpu_submission_it =
+      post_submission_time_to_gpu_submission.upper_bound(gpu_job.amdgpu_cs_ioctl_time_ns());
+  if (upper_bound_gpu_submission_it == post_submission_time_to_gpu_submission.end()) {
+    return nullptr;
+  }
+
+  const GpuQueueSubmisssion* matching_gpu_submission = &upper_bound_gpu_submission_it->second;
+
+  if (matching_gpu_submission->pre_submission_cpu_timestamp() > gpu_job.amdgpu_cs_ioctl_time_ns()) {
+    return nullptr;
+  }
+
+  return matching_gpu_submission;
+}
+
+const GpuJob* CaptureEventProcessor::FindMatchingGpuJob(
+    const GpuQueueSubmisssion& gpu_queue_submission) {
+  const auto& submission_time_to_gpu_job_it =
+      tid_to_submission_time_to_gpu_job_.find(gpu_queue_submission.thread_id());
+  if (submission_time_to_gpu_job_it == tid_to_submission_time_to_gpu_job_.end()) {
+    return nullptr;
+  }
+
+  const auto& submission_time_to_gpu_job = submission_time_to_gpu_job_it->second;
 
   auto upper_bound_gpu_job_it =
       submission_time_to_gpu_job.upper_bound(gpu_queue_submission.pre_submission_cpu_timestamp());
   if (upper_bound_gpu_job_it == submission_time_to_gpu_job.end()) {
-    ERROR("Skipping Gpu Event - No upper bound");
-    return;
+    return nullptr;
   }
 
   auto lower_bound_gpu_job_it =
       submission_time_to_gpu_job.lower_bound(gpu_queue_submission.post_submission_cpu_timestamp());
   if (lower_bound_gpu_job_it == submission_time_to_gpu_job.begin()) {
-    ERROR("Skipping Gpu Event - No lower bound");
-    return;
+    return nullptr;
   }
   --lower_bound_gpu_job_it;
 
   if (&upper_bound_gpu_job_it->second != &lower_bound_gpu_job_it->second) {
-    ERROR("Skipping Gpu Event - lower and upper bound don't match");
-    return;
+    return nullptr;
   }
 
-  const GpuJob& matching_gpu_job = upper_bound_gpu_job_it->second;
+  return &upper_bound_gpu_job_it->second;
+}
 
+void CaptureEventProcessor::DoProcessGpuQueueSubmission(
+    const GpuQueueSubmisssion& gpu_queue_submission, const GpuJob& matching_gpu_job) {
+  constexpr const char* command_buffer_text = "command buffer";
+  uint64_t command_buffer_text_key = GetStringHashAndSendToListenerIfNecessary(command_buffer_text);
   std::string timeline;
   if (matching_gpu_job.timeline_or_key_case() == GpuJob::kTimelineKey) {
     timeline = string_intern_pool[matching_gpu_job.timeline_key()];
@@ -278,8 +322,6 @@ void CaptureEventProcessor::ProcessGpuQueueSubmission(
       capture_listener_->OnTimer(command_buffer_timer);
     }
   }
-
-  submission_time_to_gpu_job.erase(matching_gpu_job.amdgpu_cs_ioctl_time_ns());
 }
 
 void CaptureEventProcessor::ProcessThreadName(const ThreadName& thread_name) {
