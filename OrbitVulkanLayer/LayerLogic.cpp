@@ -147,10 +147,15 @@ void LayerLogic::PreCallResetCommandBuffer(VkCommandBuffer command_buffer,
   LOG("PreCallResetCommandBuffer");
 }
 
-void LayerLogic::PostCallQueueSubmit(VkQueue queue, uint32_t submit_count,
-                                     const VkSubmitInfo* submits, VkFence /*fence*/) {
+void LayerLogic::PreCallQueueSubmit(VkQueue queue, uint32_t submit_count,
+                                    const VkSubmitInfo* submits, VkFence /*fence*/) {
   LOG("PostCallQueueSubmit");
-  command_buffer_manager_.DoSubmit(queue, submit_count, submits);
+  command_buffer_manager_.DoPreSubmitQueue(queue, submit_count, submits);
+}
+void LayerLogic::PostCallQueueSubmit(VkQueue queue, uint32_t /*submit_count*/,
+                                     const VkSubmitInfo* /*submits*/, VkFence /*fence*/) {
+  LOG("PostCallQueueSubmit");
+  command_buffer_manager_.DoPostSubmitQueue(queue);
 }
 
 void LayerLogic::PostCallQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* /*present_info*/) {

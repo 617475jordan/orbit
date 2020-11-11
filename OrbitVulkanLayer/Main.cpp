@@ -151,6 +151,7 @@ VKAPI_ATTR void VKAPI_CALL OrbitGetDeviceQueue2(VkDevice device,
 
 VKAPI_ATTR VkResult VKAPI_CALL OrbitQueueSubmit(VkQueue queue, uint32_t submit_count,
                                                 const VkSubmitInfo* submits, VkFence fence) {
+  logic_.PreCallQueueSubmit(queue, submit_count, submits, fence);
   VkResult result = logic_.CallQueueSubmit(queue, submit_count, submits, fence);
   logic_.PostCallQueueSubmit(queue, submit_count, submits, fence);
   return result;

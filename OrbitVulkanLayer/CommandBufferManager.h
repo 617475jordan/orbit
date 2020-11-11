@@ -49,7 +49,8 @@ class CommandBufferManager {
 
   void MarkCommandBufferEnd(const VkCommandBuffer& command_buffer);
 
-  void DoSubmit(VkQueue queue, uint32_t submit_count, const VkSubmitInfo* submits);
+  void DoPreSubmitQueue(VkQueue queue, uint32_t submit_count, const VkSubmitInfo* submits);
+  void DoPostSubmitQueue(const VkQueue& queue);
 
   void CompleteSubmits(const VkDevice& device);
 
@@ -58,21 +59,6 @@ class CommandBufferManager {
   void ResetCommandPool(const VkCommandPool& command_pool);
 
  private:
-  int ComputeDepthForEvent(uint64_t start_timestamp, uint64_t end_timestamp) {
-    for (size_t depth = 0; depth < latest_timestamp_per_depth_.size(); ++depth) {
-      if (start_timestamp >= (latest_timestamp_per_depth_[depth])) {
-        latest_timestamp_per_depth_[depth] = end_timestamp;
-        return depth;
-      }
-    }
-
-    // Note that this vector only grows in size until a certain maximum depth is
-    // reached. Since there are only O(10) events per frame created, the depth
-    // is not likely to grow to a very large size.
-    latest_timestamp_per_depth_.push_back(end_timestamp);
-    return static_cast<int>(latest_timestamp_per_depth_.size() - 1);
-  }
-
   enum MarkerType { kCommandBuffer = 0, kDebugMarker };
 
   struct MarkerState {
@@ -94,7 +80,8 @@ class CommandBufferManager {
   };
 
   struct QueueSubmission {
-    uint64_t cpu_timestamp;
+    uint64_t pre_submission_cpu_timestamp;
+    uint64_t post_submission_cpu_timestamp;
     int32_t thread_id;
     std::vector<SubmitInfo> submit_infos;
   };
@@ -110,8 +97,6 @@ class CommandBufferManager {
   TimerQueryPool* timer_query_pool_;
   PhysicalDeviceManager* physical_device_manager_;
   Writer* writer_;
-
-  std::vector<uint64_t> latest_timestamp_per_depth_;
 
   const OrbitConnector* connector_;
 };

@@ -179,9 +179,10 @@ message AddressInfo {
 
 message GpuQueueSubmisssion {
   int32 thread_id = 1;
-  uint64 cpu_submission_timestamp = 2;
-  uint64 gpu_cpu_time_offset = 3;
-  repeated GpuSubmitInfo submit_infos = 4;
+  uint64 pre_submission_cpu_timestamp = 2;
+  uint64 post_submission_cpu_timestamp = 3;
+  uint64 gpu_cpu_time_offset = 4;
+  repeated GpuSubmitInfo submit_infos = 5;
 }
 
 message GpuSubmitInfo {
@@ -189,9 +190,8 @@ message GpuSubmitInfo {
 }
 
 message GpuCommandBuffer {
-  uint64 approx_begin_cpu_timestamp_ns = 1;
-  uint64 approx_end_cpu_timestamp_ns = 2;
-  uint32 depth = 3;
+  uint64 begin_gpu_timestamp_ns = 1;
+  uint64 end_gpu_timestamp_ns = 2;
 }
 
 message CaptureEvent {

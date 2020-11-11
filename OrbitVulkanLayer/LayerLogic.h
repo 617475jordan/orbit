@@ -151,6 +151,8 @@ class LayerLogic {
   void PostCallGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2* queue_info,
                                VkQueue* queue);
 
+  void PreCallQueueSubmit(VkQueue queue, uint32_t submit_count, const VkSubmitInfo* submits,
+                          VkFence fence);
   [[nodiscard]] VkResult CallQueueSubmit(VkQueue queue, uint32_t submit_count,
                                          const VkSubmitInfo* submits, VkFence fence) {
     LOG("CallQueueSubmit");
@@ -158,6 +160,7 @@ class LayerLogic {
   }
   void PostCallQueueSubmit(VkQueue queue, uint32_t submit_count, const VkSubmitInfo* submits,
                            VkFence fence);
+
   [[nodiscard]] VkResult CallQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* present_info) {
     LOG("CallQueuePresentKHR");
     return dispatch_table_.QueuePresentKHR(queue)(queue, present_info);

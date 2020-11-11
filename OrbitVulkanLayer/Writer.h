@@ -10,7 +10,6 @@
 #include <string>
 #include <utility>
 
-#include "../cmake-build-debug/OrbitGrpcProtos/grpc_codegen/capture.pb.h"
 #include "OrbitBase/Logging.h"
 #include "absl/synchronization/mutex.h"
 #include "capture.grpc.pb.h"

@@ -98,14 +98,16 @@ void CommandBufferManager::MarkCommandBufferEnd(const VkCommandBuffer& command_b
       command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, slot_base_index + 1);
 }
 
-void CommandBufferManager::DoSubmit(VkQueue queue, uint32_t submit_count,
-                                    const VkSubmitInfo* submits) {
-  LOG("DoSubmit");
+void CommandBufferManager::DoPreSubmitQueue(VkQueue queue, uint32_t submit_count,
+                                            const VkSubmitInfo* submits) {
+  LOG("DoPreSubmitQueue");
   if (!connector_->IsCapturing()) {
     return;
   }
 
   QueueSubmission queue_submission = {};
+
+  absl::WriterMutexLock lock(&mutex_);
   for (uint32_t submit_index = 0; submit_index < submit_count; ++submit_index) {
     const VkSubmitInfo& submit_info = submits[submit_index];
     queue_submission.submit_infos.emplace_back();
@@ -124,15 +126,27 @@ void CommandBufferManager::DoSubmit(VkQueue queue, uint32_t submit_count,
     }
   }
   queue_submission.thread_id = GetCurrentThreadId();
-  queue_submission.cpu_timestamp = MonotonicTimestampNs();
+  queue_submission.pre_submission_cpu_timestamp = MonotonicTimestampNs();
 
-  {
-    absl::WriterMutexLock lock(&mutex_);
-    if (!queue_to_submissions_.contains(queue)) {
-      queue_to_submissions_[queue] = {};
-    }
-    queue_to_submissions_.at(queue).emplace_back(std::move(queue_submission));
+  if (!queue_to_submissions_.contains(queue)) {
+    queue_to_submissions_[queue] = {};
   }
+  queue_to_submissions_.at(queue).emplace_back(std::move(queue_submission));
+}
+
+// Take a timestamp before and after the exection of the driver code for the submission.
+// This allows us to map submissions from the vulkan layer to the driver submissions.
+void CommandBufferManager::DoPostSubmitQueue(const VkQueue& queue) {
+  LOG("DoPreSubmitQueue");
+  if (!connector_->IsCapturing()) {
+    return;
+  }
+
+  if (!queue_to_submissions_.contains(queue)) {
+    return;
+  }
+  QueueSubmission& current_submission = queue_to_submissions_.at(queue).back();
+  current_submission.post_submission_cpu_timestamp = MonotonicTimestampNs();
 }
 
 void CommandBufferManager::CompleteSubmits(const VkDevice& device) {
@@ -206,7 +220,10 @@ void CommandBufferManager::CompleteSubmits(const VkDevice& device) {
   for (const auto& completed_submission : completed_submissions) {
     orbit_grpc_protos::GpuQueueSubmisssion submission_proto;
     submission_proto.set_thread_id(completed_submission.thread_id);
-    submission_proto.set_cpu_submission_timestamp(completed_submission.cpu_timestamp);
+    submission_proto.set_pre_submission_cpu_timestamp(
+        completed_submission.pre_submission_cpu_timestamp);
+    submission_proto.set_post_submission_cpu_timestamp(
+        completed_submission.post_submission_cpu_timestamp);
     submission_proto.set_gpu_cpu_time_offset(gpu_cpu_offset);
     for (const auto& completed_submit : completed_submission.submit_infos) {
       orbit_grpc_protos::GpuSubmitInfo* submit_info_proto = submission_proto.add_submit_infos();
@@ -235,9 +252,8 @@ void CommandBufferManager::CompleteSubmits(const VkDevice& device) {
         end_timestamp =
             static_cast<uint64_t>(static_cast<double>(end_timestamp) * timestamp_period);
 
-        command_buffer_proto->set_approx_begin_cpu_timestamp_ns(begin_timestamp + gpu_cpu_offset);
-        command_buffer_proto->set_approx_end_cpu_timestamp_ns(end_timestamp + gpu_cpu_offset);
-        command_buffer_proto->set_depth(ComputeDepthForEvent(begin_timestamp, end_timestamp));
+        command_buffer_proto->set_begin_gpu_timestamp_ns(begin_timestamp);
+        command_buffer_proto->set_end_gpu_timestamp_ns(end_timestamp);
         query_slots_to_reset.push_back(marker.slot_index);
       }
     }

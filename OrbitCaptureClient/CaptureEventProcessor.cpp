@@ -19,6 +19,7 @@ using orbit_grpc_protos::Callstack;
 using orbit_grpc_protos::CallstackSample;
 using orbit_grpc_protos::CaptureEvent;
 using orbit_grpc_protos::FunctionCall;
+using orbit_grpc_protos::GpuCommandBuffer;
 using orbit_grpc_protos::GpuJob;
 using orbit_grpc_protos::GpuQueueSubmisssion;
 using orbit_grpc_protos::InternedCallstack;
@@ -169,7 +170,7 @@ void CaptureEventProcessor::ProcessGpuJob(const GpuJob& gpu_job) {
   timer_user_to_sched.set_thread_id(gpu_job.tid());
   timer_user_to_sched.set_start(gpu_job.amdgpu_cs_ioctl_time_ns());
   timer_user_to_sched.set_end(gpu_job.amdgpu_sched_run_job_time_ns());
-  timer_user_to_sched.set_depth(gpu_job.depth());
+  timer_user_to_sched.set_depth(gpu_job.depth() * 2);
   timer_user_to_sched.set_user_data_key(sw_queue_key);
   timer_user_to_sched.set_timeline_hash(timeline_hash);
   timer_user_to_sched.set_processor(-1);
@@ -183,7 +184,7 @@ void CaptureEventProcessor::ProcessGpuJob(const GpuJob& gpu_job) {
   timer_sched_to_start.set_thread_id(gpu_job.tid());
   timer_sched_to_start.set_start(gpu_job.amdgpu_sched_run_job_time_ns());
   timer_sched_to_start.set_end(gpu_job.gpu_hardware_start_time_ns());
-  timer_sched_to_start.set_depth(gpu_job.depth());
+  timer_sched_to_start.set_depth(gpu_job.depth() * 2);
   timer_sched_to_start.set_user_data_key(hw_queue_key);
   timer_sched_to_start.set_timeline_hash(timeline_hash);
   timer_sched_to_start.set_processor(-1);
@@ -197,34 +198,88 @@ void CaptureEventProcessor::ProcessGpuJob(const GpuJob& gpu_job) {
   timer_start_to_finish.set_thread_id(gpu_job.tid());
   timer_start_to_finish.set_start(gpu_job.gpu_hardware_start_time_ns());
   timer_start_to_finish.set_end(gpu_job.dma_fence_signaled_time_ns());
-  timer_start_to_finish.set_depth(gpu_job.depth());
+  timer_start_to_finish.set_depth(gpu_job.depth() * 2);
   timer_start_to_finish.set_user_data_key(hw_execution_key);
   timer_start_to_finish.set_timeline_hash(timeline_hash);
   timer_start_to_finish.set_processor(-1);
   timer_start_to_finish.set_type(TimerInfo::kGpuActivity);
   capture_listener_->OnTimer(std::move(timer_start_to_finish));
+
+  // TODO: We should also buffer the vulkan events, as in theory they could also be first, and match
+  // then here.
+  tid_to_submission_time_to_gpu_job_[gpu_job.tid()][gpu_job.amdgpu_cs_ioctl_time_ns()] = gpu_job;
 }
 
+// TODO: this assumes that the events come in order and all GpuJobs have been seen.
 void CaptureEventProcessor::ProcessGpuQueueSubmission(
     const GpuQueueSubmisssion& gpu_queue_submission) {
-  constexpr const char* timeline_text = "Command Buffers";
-  uint64_t timeline_text_key = GetStringHashAndSendToListenerIfNecessary(timeline_text);
   constexpr const char* command_buffer_text = "command buffer";
   uint64_t command_buffer_text_key = GetStringHashAndSendToListenerIfNecessary(command_buffer_text);
+
+  const auto& submission_time_to_gpu_job_it =
+      tid_to_submission_time_to_gpu_job_.find(gpu_queue_submission.thread_id());
+  if (submission_time_to_gpu_job_it == tid_to_submission_time_to_gpu_job_.end()) {
+    ERROR("Skipping Gpu Event - TID not found");
+    return;
+  }
+
+  auto& submission_time_to_gpu_job = submission_time_to_gpu_job_it->second;
+
+  auto upper_bound_gpu_job_it =
+      submission_time_to_gpu_job.upper_bound(gpu_queue_submission.pre_submission_cpu_timestamp());
+  if (upper_bound_gpu_job_it == submission_time_to_gpu_job.end()) {
+    ERROR("Skipping Gpu Event - No upper bound");
+    return;
+  }
+
+  auto lower_bound_gpu_job_it =
+      submission_time_to_gpu_job.lower_bound(gpu_queue_submission.post_submission_cpu_timestamp());
+  if (lower_bound_gpu_job_it == submission_time_to_gpu_job.begin()) {
+    ERROR("Skipping Gpu Event - No lower bound");
+    return;
+  }
+  --lower_bound_gpu_job_it;
+
+  if (&upper_bound_gpu_job_it->second != &lower_bound_gpu_job_it->second) {
+    ERROR("Skipping Gpu Event - lower and upper bound don't match");
+    return;
+  }
+
+  const GpuJob& matching_gpu_job = upper_bound_gpu_job_it->second;
+
+  std::string timeline;
+  if (matching_gpu_job.timeline_or_key_case() == GpuJob::kTimelineKey) {
+    timeline = string_intern_pool[matching_gpu_job.timeline_key()];
+  } else {
+    timeline = matching_gpu_job.timeline();
+  }
+  uint64_t timeline_hash = GetStringHashAndSendToListenerIfNecessary(timeline);
+
+  std::optional<GpuCommandBuffer> first_command_buffer;
   for (const auto& submit_info : gpu_queue_submission.submit_infos()) {
     for (const auto& command_buffer : submit_info.command_buffers()) {
+      if (first_command_buffer == std::nullopt) {
+        first_command_buffer = std::make_optional<GpuCommandBuffer>(command_buffer);
+      }
+      CHECK(first_command_buffer != std::nullopt);
       TimerInfo command_buffer_timer;
-      command_buffer_timer.set_start(command_buffer.approx_begin_cpu_timestamp_ns());
-      command_buffer_timer.set_end(command_buffer.approx_end_cpu_timestamp_ns());
-      command_buffer_timer.set_depth(command_buffer.depth());
+      command_buffer_timer.set_start(command_buffer.begin_gpu_timestamp_ns() -
+                                     first_command_buffer->begin_gpu_timestamp_ns() +
+                                     matching_gpu_job.gpu_hardware_start_time_ns());
+      command_buffer_timer.set_end(command_buffer.end_gpu_timestamp_ns() -
+                                   first_command_buffer->begin_gpu_timestamp_ns() +
+                                   matching_gpu_job.gpu_hardware_start_time_ns());
+      command_buffer_timer.set_depth((matching_gpu_job.depth() * 2) + 1);
+      command_buffer_timer.set_timeline_hash(timeline_hash);
       command_buffer_timer.set_processor(-1);
       command_buffer_timer.set_thread_id(gpu_queue_submission.thread_id());
       command_buffer_timer.set_type(TimerInfo::kGpuCommandBuffer);
       command_buffer_timer.set_user_data_key(command_buffer_text_key);
-      command_buffer_timer.set_timeline_hash(timeline_text_key);
       capture_listener_->OnTimer(command_buffer_timer);
     }
   }
+
+  submission_time_to_gpu_job.erase(matching_gpu_job.amdgpu_cs_ioctl_time_ns());
 }
 
 void CaptureEventProcessor::ProcessThreadName(const ThreadName& thread_name) {
