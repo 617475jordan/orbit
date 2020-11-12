@@ -49,8 +49,11 @@ class CommandBufferManager {
 
   void MarkCommandBufferEnd(const VkCommandBuffer& command_buffer);
 
+  void MarkDebugMarkerBegin(const VkCommandBuffer& command_buffer, const char* text);
+  void MarkDebugMarkerEnd(const VkCommandBuffer& command_buffer);
+
   void DoPreSubmitQueue(VkQueue queue, uint32_t submit_count, const VkSubmitInfo* submits);
-  void DoPostSubmitQueue(const VkQueue& queue);
+  void DoPostSubmitQueue(const VkQueue& queue, uint32_t submit_count, const VkSubmitInfo* submits);
 
   void CompleteSubmits(const VkDevice& device);
 
@@ -73,11 +76,14 @@ class CommandBufferManager {
     std::string text;
   };
 
+  struct SubmittedMarker {
+    SubmissionMetaInformation meta_information;
+    uint32_t slot_index;
+  };
+
   struct MarkerState {
-    SubmissionMetaInformation begin_meta_information;
-    uint32_t begin_slot_index;
-    SubmissionMetaInformation end_meta_information;
-    uint32_t end_slot_index;
+    std::optional<SubmittedMarker> begin_info;
+    std::optional<SubmittedMarker> end_info;
     std::string text;
   };
 

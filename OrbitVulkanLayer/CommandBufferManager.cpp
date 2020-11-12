@@ -103,19 +103,64 @@ void CommandBufferManager::MarkCommandBufferEnd(const VkCommandBuffer& command_b
   command_buffer_state.command_buffer_end_slot_index = std::make_optional(slot_index);
 }
 
+void CommandBufferManager::MarkDebugMarkerBegin(const VkCommandBuffer& command_buffer,
+                                                const char* text) {
+  LOG("MarkDebugMarkerBegin");
+  CHECK(text != nullptr);
+  absl::WriterMutexLock lock(&mutex_);
+  CHECK(command_buffer_to_state_.contains(command_buffer));
+  CommandBufferState& state = command_buffer_to_state_.at(command_buffer);
+  Marker marker{.type = MarkerType::kDebugMarkerBegin, .text = std::string(text)};
+  state.markers.emplace_back(std::move(marker));
+
+  if (!connector_->IsCapturing()) {
+    return;
+  }
+  VkDevice device;
+  {
+    CHECK(command_buffer_to_device_.contains(command_buffer));
+    device = command_buffer_to_device_.at(command_buffer);
+  }
+  VkQueryPool query_pool = timer_query_pool_->GetQueryPool(device);
+
+  uint32_t slot_index;
+  bool found_slot = timer_query_pool_->NextReadyQuerySlot(device, &slot_index);
+  CHECK(found_slot);
+  dispatch_table_->CmdWriteTimestamp(command_buffer)(
+      command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, query_pool, slot_index);
+
+  state.markers.back().slot_index = std::make_optional(slot_index);
+}
+void CommandBufferManager::MarkDebugMarkerEnd(const VkCommandBuffer& command_buffer) {
+  absl::WriterMutexLock lock(&mutex_);
+  CHECK(command_buffer_to_state_.contains(command_buffer));
+  CommandBufferState& state = command_buffer_to_state_.at(command_buffer);
+  Marker marker{.type = MarkerType::kDebugMarkerEnd};
+  state.markers.emplace_back(std::move(marker));
+
+  if (!connector_->IsCapturing()) {
+    return;
+  }
+  VkDevice device;
+  {
+    CHECK(command_buffer_to_device_.contains(command_buffer));
+    device = command_buffer_to_device_.at(command_buffer);
+  }
+  VkQueryPool query_pool = timer_query_pool_->GetQueryPool(device);
+
+  uint32_t slot_index;
+  bool found_slot = timer_query_pool_->NextReadyQuerySlot(device, &slot_index);
+  CHECK(found_slot);
+  dispatch_table_->CmdWriteTimestamp(command_buffer)(
+      command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, slot_index);
+
+  state.markers.back().slot_index = std::make_optional(slot_index);
+}
+
 void CommandBufferManager::DoPreSubmitQueue(VkQueue queue, uint32_t submit_count,
                                             const VkSubmitInfo* submits) {
   LOG("DoPreSubmitQueue");
   if (!connector_->IsCapturing()) {
-    absl::WriterMutexLock lock(&mutex_);
-    for (uint32_t submit_index = 0; submit_index < submit_count; ++submit_index) {
-      const VkSubmitInfo& submit_info = submits[submit_index];
-      for (uint32_t command_buffer_index = 0; command_buffer_index < submit_info.commandBufferCount;
-           ++command_buffer_index) {
-        const VkCommandBuffer& command_buffer = submit_info.pCommandBuffers[command_buffer_index];
-        command_buffer_to_state_.erase(command_buffer);
-      }
-    }
     return;
   }
 
@@ -132,7 +177,6 @@ void CommandBufferManager::DoPreSubmitQueue(VkQueue queue, uint32_t submit_count
       CHECK(command_buffer_to_state_.contains(command_buffer));
       CommandBufferState& state = command_buffer_to_state_.at(command_buffer);
       if (!state.command_buffer_begin_slot_index.has_value()) {
-        command_buffer_to_state_.erase(command_buffer);
         continue;
       }
       CHECK(state.command_buffer_end_slot_index.has_value());
@@ -140,7 +184,6 @@ void CommandBufferManager::DoPreSubmitQueue(VkQueue queue, uint32_t submit_count
           .command_buffer_begin_slot_index = state.command_buffer_begin_slot_index.value(),
           .command_buffer_end_slot_index = state.command_buffer_end_slot_index.value()};
       submitted_submit_info.command_buffers.emplace_back(std::move(submitted_command_buffer));
-      command_buffer_to_state_.erase(command_buffer);
     }
   }
   queue_submission.meta_information.thread_id = GetCurrentThreadId();
@@ -154,17 +197,59 @@ void CommandBufferManager::DoPreSubmitQueue(VkQueue queue, uint32_t submit_count
 
 // Take a timestamp before and after the exection of the driver code for the submission.
 // This allows us to map submissions from the vulkan layer to the driver submissions.
-void CommandBufferManager::DoPostSubmitQueue(const VkQueue& queue) {
+void CommandBufferManager::DoPostSubmitQueue(const VkQueue& queue, uint32_t submit_count,
+                                             const VkSubmitInfo* submits) {
   LOG("DoPreSubmitQueue");
-  if (!connector_->IsCapturing()) {
-    return;
+  {
+    absl::WriterMutexLock lock(&mutex_);
+    if (!queue_to_markers_.contains(queue)) {
+      queue_to_markers_[queue] = {};
+    }
+    CHECK(queue_to_markers_.contains(queue));
+    QueueMarkerState& markers = queue_to_markers_.at(queue);
+    QueueSubmission* queue_submission = nullptr;
+    if (queue_to_submissions_.contains(queue) && connector_->IsCapturing()) {
+      queue_submission = &queue_to_submissions_.at(queue).back();
+      queue_submission->meta_information.post_submission_cpu_timestamp = MonotonicTimestampNs();
+    }
+    for (uint32_t submit_index = 0; submit_index < submit_count; ++submit_index) {
+      const VkSubmitInfo& submit_info = submits[submit_index];
+      for (uint32_t command_buffer_index = 0; command_buffer_index < submit_info.commandBufferCount;
+           ++command_buffer_index) {
+        const VkCommandBuffer& command_buffer = submit_info.pCommandBuffers[command_buffer_index];
+        CHECK(command_buffer_to_state_.contains(command_buffer));
+        for (const Marker& marker : command_buffer_to_state_.at(command_buffer).markers) {
+          switch (marker.type) {
+            case MarkerType::kDebugMarkerBegin: {
+              std::optional<SubmittedMarker> submitted_marker = std::nullopt;
+              if (queue_submission != nullptr && marker.slot_index.has_value()) {
+                submitted_marker = {.meta_information = queue_submission->meta_information,
+                                    .slot_index = marker.slot_index.value()};
+              }
+              MarkerState marker_state{.text = marker.text, .begin_info = submitted_marker};
+              markers.marker_stack.push(std::move(marker_state));
+              break;
+            }
+            case MarkerType::kDebugMarkerEnd: {
+              MarkerState marker_state = markers.marker_stack.top();
+              markers.marker_stack.pop();
+              std::optional<SubmittedMarker> submitted_marker = std::nullopt;
+              if (queue_submission != nullptr && marker.slot_index.has_value()) {
+                submitted_marker = {.meta_information = queue_submission->meta_information,
+                                    .slot_index = marker.slot_index.value()};
+              }
+              marker_state.end_info = submitted_marker;
+              if (marker.slot_index.has_value()) {
+                markers.markers[marker.slot_index.value()] = std::move(marker_state);
+              }
+              break;
+            }
+          }
+        }
+        command_buffer_to_state_.erase(command_buffer);
+      }
+    }
   }
-
-  if (!queue_to_submissions_.contains(queue)) {
-    return;
-  }
-  QueueSubmission& current_submission = queue_to_submissions_.at(queue).back();
-  current_submission.meta_information.post_submission_cpu_timestamp = MonotonicTimestampNs();
 }
 
 void CommandBufferManager::CompleteSubmits(const VkDevice& device) {

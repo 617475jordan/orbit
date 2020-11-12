@@ -152,10 +152,10 @@ void LayerLogic::PreCallQueueSubmit(VkQueue queue, uint32_t submit_count,
   LOG("PostCallQueueSubmit");
   command_buffer_manager_.DoPreSubmitQueue(queue, submit_count, submits);
 }
-void LayerLogic::PostCallQueueSubmit(VkQueue queue, uint32_t /*submit_count*/,
-                                     const VkSubmitInfo* /*submits*/, VkFence /*fence*/) {
+void LayerLogic::PostCallQueueSubmit(VkQueue queue, uint32_t submit_count,
+                                     const VkSubmitInfo* submits, VkFence /*fence*/) {
   LOG("PostCallQueueSubmit");
-  command_buffer_manager_.DoPostSubmitQueue(queue);
+  command_buffer_manager_.DoPostSubmitQueue(queue, submit_count, submits);
 }
 
 void LayerLogic::PostCallQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* /*present_info*/) {
@@ -181,13 +181,16 @@ void LayerLogic::PreCallCmdEndDebugUtilsLabelEXT(VkCommandBuffer /*command_buffe
   LOG("PreCallCmdEndDebugUtilsLabelEXT");
 }
 
-void LayerLogic::PostCallCmdDebugMarkerBeginEXT(VkCommandBuffer /*command_buffer*/,
-                                                const VkDebugMarkerMarkerInfoEXT* /*marker_info*/) {
+void LayerLogic::PostCallCmdDebugMarkerBeginEXT(VkCommandBuffer command_buffer,
+                                                const VkDebugMarkerMarkerInfoEXT* marker_info) {
   LOG("PostCallCmdDebugMarkerBeginEXT");
+  CHECK(marker_info != nullptr);
+  command_buffer_manager_.MarkDebugMarkerBegin(command_buffer, marker_info->pMarkerName);
 }
 
-void LayerLogic::PreCallCmdDebugMarkerEndEXT(VkCommandBuffer /*command_buffer*/) {
+void LayerLogic::PreCallCmdDebugMarkerEndEXT(VkCommandBuffer command_buffer) {
   LOG("PreCallCmdDebugMarkerEndEXT");
+  command_buffer_manager_.MarkDebugMarkerEnd(command_buffer);
 }
 
 }  // namespace orbit_vulkan_layer
