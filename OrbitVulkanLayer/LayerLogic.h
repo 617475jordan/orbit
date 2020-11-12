@@ -170,7 +170,9 @@ class LayerLogic {
   void CallCmdBeginDebugUtilsLabelEXT(VkCommandBuffer command_buffer,
                                       const VkDebugUtilsLabelEXT* label_info) {
     LOG("CallCmdBeginDebugUtilsLabelEXT");
-    dispatch_table_.CmdBeginDebugUtilsLabelEXT(command_buffer)(command_buffer, label_info);
+    if (dispatch_table_.IsDebugUtilsExtensionSupported(command_buffer)) {
+      dispatch_table_.CmdBeginDebugUtilsLabelEXT(command_buffer)(command_buffer, label_info);
+    }
   }
   void PostCallCmdBeginDebugUtilsLabelEXT(VkCommandBuffer command_buffer,
                                           const VkDebugUtilsLabelEXT* label_info);
@@ -178,13 +180,17 @@ class LayerLogic {
   void PreCallCmdEndDebugUtilsLabelEXT(VkCommandBuffer command_buffer);
   void CallCmdEndDebugUtilsLabelEXT(VkCommandBuffer command_buffer) {
     LOG("CallCmdEndDebugUtilsLabelEXT");
-    dispatch_table_.CmdEndDebugUtilsLabelEXT(command_buffer)(command_buffer);
+    if (dispatch_table_.IsDebugUtilsExtensionSupported(command_buffer)) {
+      dispatch_table_.CmdEndDebugUtilsLabelEXT(command_buffer)(command_buffer);
+    }
   }
 
   void CallCmdDebugMarkerBeginEXT(VkCommandBuffer command_buffer,
                                   const VkDebugMarkerMarkerInfoEXT* marker_info) {
     LOG("CallCmdDebugMarkerBeginEXT");
-    dispatch_table_.CmdDebugMarkerBeginEXT(command_buffer)(command_buffer, marker_info);
+    if (dispatch_table_.IsDebugMarkerExtensionSupported(command_buffer)) {
+      dispatch_table_.CmdDebugMarkerBeginEXT(command_buffer)(command_buffer, marker_info);
+    }
   }
   void PostCallCmdDebugMarkerBeginEXT(VkCommandBuffer command_buffer,
                                       const VkDebugMarkerMarkerInfoEXT* marker_info);
@@ -192,7 +198,9 @@ class LayerLogic {
   void PreCallCmdDebugMarkerEndEXT(VkCommandBuffer command_buffer);
   void CallCmdDebugMarkerEndEXT(VkCommandBuffer command_buffer) {
     LOG("CallCmdDebugMarkerEndEXT");
-    dispatch_table_.CmdDebugMarkerEndEXT(command_buffer)(command_buffer);
+    if (dispatch_table_.IsDebugMarkerExtensionSupported(command_buffer)) {
+      dispatch_table_.CmdDebugMarkerEndEXT(command_buffer)(command_buffer);
+    }
   }
 
  private:

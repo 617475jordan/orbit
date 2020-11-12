@@ -144,13 +144,23 @@ class DispatchTable {
 
     {
       absl::WriterMutexLock lock(&mutex_);
-      device_dispatch_table_[GetDispatchTableKey(device)] = dispatch_table;
+      void* key = GetDispatchTableKey(device);
+      device_dispatch_table_[key] = dispatch_table;
+      device_supports_debug_utils_extension_[key] =
+          dispatch_table.CmdBeginDebugUtilsLabelEXT != nullptr &&
+          dispatch_table.CmdEndDebugUtilsLabelEXT != nullptr;
+      device_supports_debug_marker_extension_[key] =
+          dispatch_table.CmdDebugMarkerBeginEXT != nullptr &&
+          dispatch_table.CmdDebugMarkerEndEXT != nullptr;
     }
   }
 
   void RemoveDeviceDispatchTable(const VkDevice& device) {
+    void* key = GetDispatchTableKey(device);
     absl::WriterMutexLock lock(&mutex_);
-    device_dispatch_table_.erase(GetDispatchTableKey(device));
+    device_dispatch_table_.erase(key);
+    device_supports_debug_utils_extension_.erase(key);
+    device_supports_debug_marker_extension_.erase(key);
   }
 
   template <typename DispatchableType>
@@ -462,6 +472,22 @@ class DispatchTable {
     return device_dispatch_table_.at(key).CmdDebugMarkerEndEXT;
   }
 
+  template <typename DispatchableType>
+  bool IsDebugMarkerExtensionSupported(const DispatchableType& dispatchable_object) {
+    absl::ReaderMutexLock lock(&mutex_);
+    void* key = GetDispatchTableKey(dispatchable_object);
+    CHECK(device_supports_debug_marker_extension_.contains(key));
+    return device_supports_debug_marker_extension_.at(key);
+  }
+
+  template <typename DispatchableType>
+  bool IsDebugUtilsExtensionSupported(const DispatchableType& dispatchable_object) {
+    absl::ReaderMutexLock lock(&mutex_);
+    void* key = GetDispatchTableKey(dispatchable_object);
+    CHECK(device_supports_debug_utils_extension_.contains(key));
+    return device_supports_debug_utils_extension_.at(key);
+  }
+
  private:
   /*
    * In vulkan, every "dispatchable type" has as a very first field in memory a pointer to the
@@ -479,6 +505,8 @@ class DispatchTable {
   // layer in the dispatch chain among our handling of functions we intercept.
   absl::flat_hash_map<void*, VkLayerInstanceDispatchTable> instance_dispatch_table_;
   absl::flat_hash_map<void*, VkLayerDispatchTable> device_dispatch_table_;
+  absl::flat_hash_map<void*, bool> device_supports_debug_marker_extension_;
+  absl::flat_hash_map<void*, bool> device_supports_debug_utils_extension_;
 
   // Must protect access to dispatch tables above by mutex since the Vulkan
   // application may be calling these functions from different threads.
