@@ -13,15 +13,6 @@
 
 namespace orbit_vulkan_layer {
 
-/*
- * We use each "logical" query slot twice, once for "Begin" queries and once for "end" queries.
- * Thus, we have two times the number of "physical".
- * This assumes, that the slot state of the physical slots is always the same for begin and ends,
- * which needs to be ensured by the caller.
- *
- * To translate a logical slot to a physical begin slot: logical_slot * 2
- * To translate a logical slot to a physical end slot: logical_slot * 2 + 1
- */
 class TimerQueryPool {
  public:
   explicit TimerQueryPool(DispatchTable* dispatch_table,
@@ -45,8 +36,7 @@ class TimerQueryPool {
     kQueryPendingOnGPU,
   };
 
-  static constexpr uint32_t kNumLogicalQuerySlots = 32768;
-  static constexpr uint32_t kNumPhysicalTimerQuerySlots = kNumLogicalQuerySlots * 2;
+  static constexpr uint32_t kNumPhysicalTimerQuerySlots = 65536;
 
   void CalibrateGPUTimeStamps(const VkDevice& device, const VkPhysicalDevice& physical_device,
                               const VkQueryPool& query_pool);
@@ -57,7 +47,7 @@ class TimerQueryPool {
   absl::Mutex mutex_;
   absl::flat_hash_map<VkDevice, VkQueryPool> device_to_query_pool_;
 
-  absl::flat_hash_map<VkDevice, std::array<SlotState, kNumLogicalQuerySlots>>
+  absl::flat_hash_map<VkDevice, std::array<SlotState, kNumPhysicalTimerQuerySlots>>
       device_to_query_slots_;
   absl::flat_hash_map<VkDevice, uint32_t> device_to_potential_next_free_index_;
 

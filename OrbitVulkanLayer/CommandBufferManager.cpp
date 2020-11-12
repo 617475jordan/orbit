@@ -68,9 +68,7 @@ void CommandBufferManager::MarkCommandBufferBegin(const VkCommandBuffer& command
   {
     absl::WriterMutexLock lock(&mutex_);
     CHECK(!command_buffer_to_state_.contains(command_buffer));
-    MarkerState marker_state{
-        .type = kCommandBuffer, .text = "Command Buffer", .slot_index = slot_index};
-    command_buffer_to_state_[command_buffer] = {.command_buffer_marker = std::move(marker_state)};
+    command_buffer_to_state_[command_buffer] = {.command_buffer_begin_slot_index = slot_index};
   }
 }
 
@@ -91,11 +89,13 @@ void CommandBufferManager::MarkCommandBufferEnd(const VkCommandBuffer& command_b
   VkQueryPool query_pool = timer_query_pool_->GetQueryPool(device);
 
   CommandBufferState& command_buffer_state = command_buffer_to_state_.at(command_buffer);
-
-  uint32_t slot_base_index = command_buffer_state.command_buffer_marker.slot_index;
+  uint32_t slot_index;
+  bool found_slot = timer_query_pool_->NextReadyQuerySlot(device, &slot_index);
+  CHECK(found_slot);
 
   dispatch_table_->CmdWriteTimestamp(command_buffer)(
-      command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, slot_base_index + 1);
+      command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, slot_index);
+  command_buffer_state.command_buffer_end_slot_index = std::make_optional(slot_index);
 }
 
 void CommandBufferManager::DoPreSubmitQueue(VkQueue queue, uint32_t submit_count,
@@ -119,8 +119,10 @@ void CommandBufferManager::DoPreSubmitQueue(VkQueue queue, uint32_t submit_count
         continue;
       }
       CommandBufferState& state = command_buffer_to_state_.at(command_buffer);
-      SubmittedCommandBuffer submitted_command_buffer{.command_buffer_marker =
-                                                          std::move(state.command_buffer_marker)};
+      CHECK(state.command_buffer_end_slot_index.has_value());
+      SubmittedCommandBuffer submitted_command_buffer{
+          .command_buffer_begin_slot_index = state.command_buffer_begin_slot_index,
+          .command_buffer_end_slot_index = state.command_buffer_end_slot_index.value()};
       submitted_submit_info.command_buffers.emplace_back(std::move(submitted_command_buffer));
       command_buffer_to_state_.erase(command_buffer);
     }
@@ -178,13 +180,13 @@ void CommandBufferManager::CompleteSubmits(const VkDevice& device) {
             continue;
           }
           // We found our last command buffer, so lets check if its result is there:
-          uint32_t check_slot_index_base =
-              submit_info.command_buffers.back().command_buffer_marker.slot_index;
+          const SubmittedCommandBuffer& last_command_buffer = submit_info.command_buffers.back();
+          uint32_t check_slot_index_end = last_command_buffer.command_buffer_end_slot_index;
 
           VkDeviceSize result_stride = sizeof(uint64_t);
           uint64_t test_query_result = 0;
           VkResult query_worked = dispatch_table_->GetQueryPoolResults(device)(
-              device, query_pool, check_slot_index_base + 1, 1, sizeof(test_query_result),
+              device, query_pool, check_slot_index_end, 1, sizeof(test_query_result),
               &test_query_result, result_stride, VK_QUERY_RESULT_64_BIT);
 
           // Only erase the submission if we query its timers now.
@@ -231,19 +233,18 @@ void CommandBufferManager::CompleteSubmits(const VkDevice& device) {
         orbit_grpc_protos::GpuCommandBuffer* command_buffer_proto =
             submit_info_proto->add_command_buffers();
 
-        const MarkerState& marker = completed_command_buffer.command_buffer_marker;
         VkDeviceSize result_stride = sizeof(uint64_t);
 
         uint64_t begin_timestamp = 0;
         VkResult result_status = dispatch_table_->GetQueryPoolResults(device)(
-            device, query_pool, marker.slot_index, 1, sizeof(begin_timestamp), &begin_timestamp,
-            result_stride, VK_QUERY_RESULT_64_BIT);
+            device, query_pool, completed_command_buffer.command_buffer_begin_slot_index, 1,
+            sizeof(begin_timestamp), &begin_timestamp, result_stride, VK_QUERY_RESULT_64_BIT);
         CHECK(result_status == VK_SUCCESS);
 
         uint64_t end_timestamp = 0;
         result_status = dispatch_table_->GetQueryPoolResults(device)(
-            device, query_pool, marker.slot_index + 1, 1, sizeof(end_timestamp), &end_timestamp,
-            result_stride, VK_QUERY_RESULT_64_BIT);
+            device, query_pool, completed_command_buffer.command_buffer_end_slot_index, 1,
+            sizeof(end_timestamp), &end_timestamp, result_stride, VK_QUERY_RESULT_64_BIT);
 
         CHECK(result_status == VK_SUCCESS);
 
@@ -254,7 +255,8 @@ void CommandBufferManager::CompleteSubmits(const VkDevice& device) {
 
         command_buffer_proto->set_begin_gpu_timestamp_ns(begin_timestamp);
         command_buffer_proto->set_end_gpu_timestamp_ns(end_timestamp);
-        query_slots_to_reset.push_back(marker.slot_index);
+        query_slots_to_reset.push_back(completed_command_buffer.command_buffer_begin_slot_index);
+        query_slots_to_reset.push_back(completed_command_buffer.command_buffer_end_slot_index);
       }
     }
     writer_->WriteQueueSubmission(submission_proto);
@@ -272,7 +274,10 @@ void CommandBufferManager::ResetCommandBuffer(const VkCommandBuffer& command_buf
   CommandBufferState& state = command_buffer_to_state_.at(command_buffer);
   const VkDevice& device = command_buffer_to_device_.at(command_buffer);
   std::vector<uint32_t> marker_slots_to_rollback;
-  marker_slots_to_rollback.push_back(state.command_buffer_marker.slot_index);
+  marker_slots_to_rollback.push_back(state.command_buffer_begin_slot_index);
+  if (state.command_buffer_end_slot_index.has_value()) {
+    marker_slots_to_rollback.push_back(state.command_buffer_end_slot_index.value());
+  }
   timer_query_pool_->RollbackPendingQuerySlots(device, marker_slots_to_rollback);
 
   command_buffer_to_state_.erase(command_buffer);

@@ -68,11 +68,13 @@ class CommandBufferManager {
   };
 
   struct CommandBufferState {
-    MarkerState command_buffer_marker;
+    uint32_t command_buffer_begin_slot_index;
+    std::optional<uint32_t> command_buffer_end_slot_index = std::nullopt;
   };
 
   struct SubmittedCommandBuffer {
-    MarkerState command_buffer_marker;
+    uint32_t command_buffer_begin_slot_index;
+    uint32_t command_buffer_end_slot_index;
   };
 
   struct SubmitInfo {
