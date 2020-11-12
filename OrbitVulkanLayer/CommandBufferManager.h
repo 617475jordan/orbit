@@ -59,17 +59,41 @@ class CommandBufferManager {
   void ResetCommandPool(const VkCommandPool& command_pool);
 
  private:
-  enum MarkerType { kCommandBuffer = 0, kDebugMarker };
+  enum MarkerType { kDebugMarkerBegin = 0, kDebugMarkerEnd };
+
+  struct SubmissionMetaInformation {
+    uint64_t pre_submission_cpu_timestamp;
+    uint64_t post_submission_cpu_timestamp;
+    int32_t thread_id;
+  };
+
+  struct Marker {
+    MarkerType type;
+    std::optional<uint32_t> slot_index;
+    std::string text;
+  };
 
   struct MarkerState {
-    MarkerType type;
+    SubmissionMetaInformation begin_meta_information;
+    uint32_t begin_slot_index;
+    SubmissionMetaInformation end_meta_information;
+    uint32_t end_slot_index;
     std::string text;
-    uint32_t slot_index;
+  };
+
+  struct CommandBufferMarkers {
+    std::vector<Marker> markers;
+  };
+
+  struct QueueMarkerState {
+    std::stack<MarkerState> marker_stack;
+    absl::flat_hash_map<uint32_t, MarkerState> markers;
   };
 
   struct CommandBufferState {
-    uint32_t command_buffer_begin_slot_index;
+    std::optional<uint32_t> command_buffer_begin_slot_index;
     std::optional<uint32_t> command_buffer_end_slot_index = std::nullopt;
+    std::vector<Marker> markers;
   };
 
   struct SubmittedCommandBuffer {
@@ -82,9 +106,7 @@ class CommandBufferManager {
   };
 
   struct QueueSubmission {
-    uint64_t pre_submission_cpu_timestamp;
-    uint64_t post_submission_cpu_timestamp;
-    int32_t thread_id;
+    SubmissionMetaInformation meta_information;
     std::vector<SubmitInfo> submit_infos;
   };
 
@@ -94,6 +116,7 @@ class CommandBufferManager {
 
   absl::flat_hash_map<VkCommandBuffer, CommandBufferState> command_buffer_to_state_;
   absl::flat_hash_map<VkQueue, std::vector<QueueSubmission>> queue_to_submissions_;
+  absl::flat_hash_map<VkQueue, QueueMarkerState> queue_to_markers_;
 
   DispatchTable* dispatch_table_;
   TimerQueryPool* timer_query_pool_;

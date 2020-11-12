@@ -48,6 +48,11 @@ void CommandBufferManager::UntrackCommandBuffers(VkDevice device, VkCommandPool 
 
 void CommandBufferManager::MarkCommandBufferBegin(const VkCommandBuffer& command_buffer) {
   LOG("MarkCommandBufferBegin");
+  {
+    absl::WriterMutexLock lock(&mutex_);
+    CHECK(!command_buffer_to_state_.contains(command_buffer));
+    command_buffer_to_state_[command_buffer] = {};
+  }
   if (!connector_->IsCapturing()) {
     return;
   }
@@ -67,8 +72,8 @@ void CommandBufferManager::MarkCommandBufferBegin(const VkCommandBuffer& command
       command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, query_pool, slot_index);
   {
     absl::WriterMutexLock lock(&mutex_);
-    CHECK(!command_buffer_to_state_.contains(command_buffer));
-    command_buffer_to_state_[command_buffer] = {.command_buffer_begin_slot_index = slot_index};
+    command_buffer_to_state_.at(command_buffer).command_buffer_begin_slot_index =
+        std::make_optional(slot_index);
   }
 }
 
@@ -78,7 +83,9 @@ void CommandBufferManager::MarkCommandBufferEnd(const VkCommandBuffer& command_b
     return;
   }
   absl::ReaderMutexLock lock(&mutex_);
-  if (!command_buffer_to_state_.contains(command_buffer)) {
+  CHECK(command_buffer_to_state_.contains(command_buffer));
+  CommandBufferState& command_buffer_state = command_buffer_to_state_.at(command_buffer);
+  if (!command_buffer_state.command_buffer_begin_slot_index.has_value()) {
     return;
   }
   VkDevice device;
@@ -87,8 +94,6 @@ void CommandBufferManager::MarkCommandBufferEnd(const VkCommandBuffer& command_b
     device = command_buffer_to_device_.at(command_buffer);
   }
   VkQueryPool query_pool = timer_query_pool_->GetQueryPool(device);
-
-  CommandBufferState& command_buffer_state = command_buffer_to_state_.at(command_buffer);
   uint32_t slot_index;
   bool found_slot = timer_query_pool_->NextReadyQuerySlot(device, &slot_index);
   CHECK(found_slot);
@@ -102,6 +107,15 @@ void CommandBufferManager::DoPreSubmitQueue(VkQueue queue, uint32_t submit_count
                                             const VkSubmitInfo* submits) {
   LOG("DoPreSubmitQueue");
   if (!connector_->IsCapturing()) {
+    absl::WriterMutexLock lock(&mutex_);
+    for (uint32_t submit_index = 0; submit_index < submit_count; ++submit_index) {
+      const VkSubmitInfo& submit_info = submits[submit_index];
+      for (uint32_t command_buffer_index = 0; command_buffer_index < submit_info.commandBufferCount;
+           ++command_buffer_index) {
+        const VkCommandBuffer& command_buffer = submit_info.pCommandBuffers[command_buffer_index];
+        command_buffer_to_state_.erase(command_buffer);
+      }
+    }
     return;
   }
 
@@ -115,20 +129,22 @@ void CommandBufferManager::DoPreSubmitQueue(VkQueue queue, uint32_t submit_count
     for (uint32_t command_buffer_index = 0; command_buffer_index < submit_info.commandBufferCount;
          ++command_buffer_index) {
       const VkCommandBuffer& command_buffer = submit_info.pCommandBuffers[command_buffer_index];
-      if (!command_buffer_to_state_.contains(command_buffer)) {
+      CHECK(command_buffer_to_state_.contains(command_buffer));
+      CommandBufferState& state = command_buffer_to_state_.at(command_buffer);
+      if (!state.command_buffer_begin_slot_index.has_value()) {
+        command_buffer_to_state_.erase(command_buffer);
         continue;
       }
-      CommandBufferState& state = command_buffer_to_state_.at(command_buffer);
       CHECK(state.command_buffer_end_slot_index.has_value());
       SubmittedCommandBuffer submitted_command_buffer{
-          .command_buffer_begin_slot_index = state.command_buffer_begin_slot_index,
+          .command_buffer_begin_slot_index = state.command_buffer_begin_slot_index.value(),
           .command_buffer_end_slot_index = state.command_buffer_end_slot_index.value()};
       submitted_submit_info.command_buffers.emplace_back(std::move(submitted_command_buffer));
       command_buffer_to_state_.erase(command_buffer);
     }
   }
-  queue_submission.thread_id = GetCurrentThreadId();
-  queue_submission.pre_submission_cpu_timestamp = MonotonicTimestampNs();
+  queue_submission.meta_information.thread_id = GetCurrentThreadId();
+  queue_submission.meta_information.pre_submission_cpu_timestamp = MonotonicTimestampNs();
 
   if (!queue_to_submissions_.contains(queue)) {
     queue_to_submissions_[queue] = {};
@@ -148,7 +164,7 @@ void CommandBufferManager::DoPostSubmitQueue(const VkQueue& queue) {
     return;
   }
   QueueSubmission& current_submission = queue_to_submissions_.at(queue).back();
-  current_submission.post_submission_cpu_timestamp = MonotonicTimestampNs();
+  current_submission.meta_information.post_submission_cpu_timestamp = MonotonicTimestampNs();
 }
 
 void CommandBufferManager::CompleteSubmits(const VkDevice& device) {
@@ -221,11 +237,10 @@ void CommandBufferManager::CompleteSubmits(const VkDevice& device) {
   std::vector<uint32_t> query_slots_to_reset;
   for (const auto& completed_submission : completed_submissions) {
     orbit_grpc_protos::GpuQueueSubmisssion submission_proto;
-    submission_proto.set_thread_id(completed_submission.thread_id);
-    submission_proto.set_pre_submission_cpu_timestamp(
-        completed_submission.pre_submission_cpu_timestamp);
-    submission_proto.set_post_submission_cpu_timestamp(
-        completed_submission.post_submission_cpu_timestamp);
+    const SubmissionMetaInformation meta_info = completed_submission.meta_information;
+    submission_proto.set_thread_id(meta_info.thread_id);
+    submission_proto.set_pre_submission_cpu_timestamp(meta_info.pre_submission_cpu_timestamp);
+    submission_proto.set_post_submission_cpu_timestamp(meta_info.post_submission_cpu_timestamp);
     submission_proto.set_gpu_cpu_time_offset(gpu_cpu_offset);
     for (const auto& completed_submit : completed_submission.submit_infos) {
       orbit_grpc_protos::GpuSubmitInfo* submit_info_proto = submission_proto.add_submit_infos();
@@ -274,7 +289,9 @@ void CommandBufferManager::ResetCommandBuffer(const VkCommandBuffer& command_buf
   CommandBufferState& state = command_buffer_to_state_.at(command_buffer);
   const VkDevice& device = command_buffer_to_device_.at(command_buffer);
   std::vector<uint32_t> marker_slots_to_rollback;
-  marker_slots_to_rollback.push_back(state.command_buffer_begin_slot_index);
+  if (state.command_buffer_begin_slot_index.has_value()) {
+    marker_slots_to_rollback.push_back(state.command_buffer_begin_slot_index.value());
+  }
   if (state.command_buffer_end_slot_index.has_value()) {
     marker_slots_to_rollback.push_back(state.command_buffer_end_slot_index.value());
   }
